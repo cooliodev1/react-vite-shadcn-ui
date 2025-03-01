@@ -7,7 +7,7 @@ interface Discount {
   status: "active" | "inactive";
 }
 
-// Sample data
+// Sample discount data
 const discountData: Discount[] = [
   { discountCode: "SAVE20", status: "active" },
   { discountCode: "FREESHIP", status: "inactive" },
@@ -18,7 +18,10 @@ const discountData: Discount[] = [
 export function DiscountCardList() {
   const [searchTerm, setSearchTerm] = useState("");
   const [filter, setFilter] = useState<"all" | "active" | "inactive">("all");
+  // Keep track of which discount codes are currently selected
+  const [selectedCards, setSelectedCards] = useState<string[]>([]);
 
+  // Filter the discount data based on search term and filter
   const filteredDiscounts = discountData.filter((discount) => {
     const matchesSearch = discount.discountCode
       .toLowerCase()
@@ -26,6 +29,22 @@ export function DiscountCardList() {
     const matchesFilter = filter === "all" ? true : discount.status === filter;
     return matchesSearch && matchesFilter;
   });
+
+  // Toggle selection for a given discount code
+  const toggleSelect = (discountCode: string) => {
+    setSelectedCards((prev) =>
+      prev.includes(discountCode)
+        ? prev.filter((code) => code !== discountCode)
+        : [...prev, discountCode]
+    );
+  };
+
+  // Update the filter WITHOUT clearing selectedCards
+  // so that checked items remain selected if they still appear in the new filter.
+  const handleFilterChange = (newFilter: "all" | "active" | "inactive") => {
+    setFilter(newFilter);
+    // We do NOT reset selectedCards here.
+  };
 
   return (
     <div className="p-4">
@@ -36,7 +55,7 @@ export function DiscountCardList() {
           placeholder="Search discount codes..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
-          className="rounded-md p-2 border border-gray-300 dark:bg-neutral-800 dark:border-gray-600 w-full"
+          className="rounded-md p-2 border border-gray-300 dark:bg-neutral-900 dark:border-gray-600 w-full"
         />
       </div>
 
@@ -44,31 +63,35 @@ export function DiscountCardList() {
       <div className="mb-4 flex gap-2">
         <Button
           variant={filter === "all" ? "default" : "outline"}
-          onClick={() => setFilter("all")}
+          onClick={() => handleFilterChange("all")}
         >
           All
         </Button>
         <Button
           variant={filter === "active" ? "default" : "outline"}
-          onClick={() => setFilter("active")}
+          onClick={() => handleFilterChange("active")}
         >
           Active
         </Button>
         <Button
           variant={filter === "inactive" ? "default" : "outline"}
-          onClick={() => setFilter("inactive")}
+          onClick={() => handleFilterChange("inactive")}
         >
           Inactive
         </Button>
       </div>
 
-      {/* List of Discount Cards */}
+      {/* Discount Cards */}
       <div className="space-y-4">
         {filteredDiscounts.map((discount) => (
           <DiscountCard
             key={discount.discountCode}
             discountCode={discount.discountCode}
             status={discount.status}
+            // Pass down whether this discount code is selected
+            isSelected={selectedCards.includes(discount.discountCode)}
+            // Pass down how to toggle its selection
+            onToggleSelect={() => toggleSelect(discount.discountCode)}
           />
         ))}
       </div>

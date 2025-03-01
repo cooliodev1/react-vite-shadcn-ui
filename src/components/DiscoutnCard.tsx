@@ -8,19 +8,25 @@ import { RiCheckboxCircleLine, RiCheckboxBlankCircleFill } from "react-icons/ri"
 interface DiscountCardProps {
   discountCode: string;
   status: "active" | "inactive";
+  isSelected: boolean;
+  onToggleSelect: () => void;
 }
 
-export function DiscountCard({ discountCode, status }: DiscountCardProps) {
+export function DiscountCard({
+  discountCode,
+  status,
+  isSelected,
+  onToggleSelect,
+}: DiscountCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [isSelected, setIsSelected] = useState(false);
 
-  // Use "default" for active (with custom green styling) and "destructive" for inactive.
+  // Use "default" for active (with custom styling) and "destructive" for inactive.
   const badgeVariant = status === "active" ? "default" : "destructive";
 
   return (
     <Card
-      onClick={() => setIsSelected(!isSelected)}
-      className={`mb-4 transition-colors duration-200 hover:bg-neutral-200 dark:hover:bg-neutral-800 cursor-pointer ${
+      onClick={onToggleSelect}
+      className={`mb-4 transition-colors duration-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer ${
         isSelected ? "border border-black dark:border-white" : ""
       }`}
     >
@@ -30,9 +36,11 @@ export function DiscountCard({ discountCode, status }: DiscountCardProps) {
         <div className="flex items-center gap-2">
           <div className="w-6 h-6">
             {isSelected ? (
-              <RiCheckboxCircleLine className="w-6 h-6 text-green-300" />
+              // Checked: black in light mode, green in dark mode
+              <RiCheckboxCircleLine className="w-6 h-6 text-black dark:text-green-300" />
             ) : (
-              <RiCheckboxBlankCircleFill className="w-6 h-6 text-gray-400" />
+              // Unchecked: neutral-200 in light mode, gray-400 in dark mode
+              <RiCheckboxBlankCircleFill className="w-6 h-6 text-neutral-200 dark:text-gray-400" />
             )}
           </div>
           <h3 className="text-xl font-bold">{discountCode}</h3>
@@ -42,7 +50,12 @@ export function DiscountCard({ discountCode, status }: DiscountCardProps) {
         <div className="flex items-center gap-2">
           <Badge
             variant={badgeVariant}
-            className={status === "active" ? "bg-green-300 text-black" : ""}
+            // Keep the same color on hover to remove the hover effect
+            className={
+              status === "active"
+                ? "bg-green-300 text-black hover:bg-green-300 hover:text-black"
+                : ""
+            }
           >
             {status.toUpperCase()}
           </Badge>
