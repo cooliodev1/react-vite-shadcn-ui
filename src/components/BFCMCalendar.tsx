@@ -6,7 +6,7 @@ import { events } from "@/data/events"
 
 /**
  * Highlight event days in the calendar and show a sidebar with the
- * corresponding events when a date is selected.
+ * coresponding events when a date is selected.
  */
 export function BFCMCalendar() {
   const [selectedDay, setSelectedDay] = React.useState<Date | undefined>()
