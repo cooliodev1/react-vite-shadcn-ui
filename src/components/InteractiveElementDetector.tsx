@@ -56,6 +56,7 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [imageData, setImageData] = useState<ImageData | null>(null);
   const [sensitivity, setSensitivity] = useState(50); // 0-100 scale
+  const [paddingFactor, setPaddingFactor] = useState(15); // 0-50% padding
 
   // Load and draw image
   const loadImage = async () => {
@@ -214,20 +215,36 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
     const shapeScore = Math.min(elementWidth, elementHeight) / Math.max(elementWidth, elementHeight);
     const confidence = (sizeScore * 0.4 + contrastScore * 0.4 + shapeScore * 0.2) * 100;
     
+    // Add padding to make rectangles larger (adjustable via paddingFactor)
+    const paddingFactorX = paddingFactor / 100; // Convert percentage to decimal
+    const paddingFactorY = paddingFactor / 100;
+    
+    const paddingX = Math.round(elementWidth * paddingFactorX);
+    const paddingY = Math.round(elementHeight * paddingFactorY);
+    
+    // Apply padding while ensuring we stay within canvas bounds
+    const paddedX = Math.max(0, minX - paddingX);
+    const paddedY = Math.max(0, minY - paddingY);
+    const paddedMaxX = Math.min(width - 1, maxX + paddingX);
+    const paddedMaxY = Math.min(height - 1, maxY + paddingY);
+    
+    const paddedWidth = paddedMaxX - paddedX + 1;
+    const paddedHeight = paddedMaxY - paddedY + 1;
+    
     return {
       id: `element-${minX}-${minY}-${Date.now()}`,
       boundingBox: {
-        x: minX,
-        y: minY,
-        width: elementWidth,
-        height: elementHeight
+        x: paddedX,
+        y: paddedY,
+        width: paddedWidth,
+        height: paddedHeight
       },
       elementType,
       confidence: Math.round(confidence),
       averageColor: `rgb(${avgR}, ${avgG}, ${avgB})`,
       isHighContrast: avgContrast > 50
     };
-  }, [imageData, canvasSize, sensitivity]);
+  }, [imageData, canvasSize, sensitivity, paddingFactor]);
 
   // Classify element type based on characteristics
   const classifyElement = (width: number, height: number, area: number, contrast: number, pixelCount: number): DetectedElement['elementType'] => {
@@ -369,17 +386,31 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
 
       {/* Sensitivity Control */}
       {isAnalysisMode && (
-        <div className="flex items-center gap-2">
-          <span className="text-sm">Sensitivity:</span>
-          <input
-            type="range"
-            min="1"
-            max="100"
-            value={sensitivity}
-            onChange={(e) => setSensitivity(Number(e.target.value))}
-            className="flex-1"
-          />
-          <span className="text-sm w-8">{sensitivity}%</span>
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="text-sm">Sensitivity:</span>
+            <input
+              type="range"
+              min="1"
+              max="100"
+              value={sensitivity}
+              onChange={(e) => setSensitivity(Number(e.target.value))}
+              className="flex-1"
+            />
+            <span className="text-sm w-8">{sensitivity}%</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm">Rectangle Size:</span>
+            <input
+              type="range"
+              min="0"
+              max="50"
+              value={paddingFactor}
+              onChange={(e) => setPaddingFactor(Number(e.target.value))}
+              className="flex-1"
+            />
+            <span className="text-sm w-8">+{paddingFactor}%</span>
+          </div>
         </div>
       )}
 

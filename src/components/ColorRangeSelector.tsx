@@ -52,6 +52,19 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
   const [selectedElements, setSelectedElements] = useState<any[]>([]);
   const [currentStep, setCurrentStep] = useState<'input' | 'detection' | 'processing'>('input');
   const [currentProcessingElement, setCurrentProcessingElement] = useState<any | null>(null);
+  const [savedAssets, setSavedAssets] = useState<Array<{
+    id: string;
+    name: string;
+    imageData: string;
+    timestamp: number;
+    type: 'color-selection' | 'background-removed' | 'cropped';
+    metadata?: {
+      colors?: string[];
+      dimensions?: { width: number; height: number };
+      elementType?: string;
+    };
+  }>>([]);
+  const [showAssetsPanel, setShowAssetsPanel] = useState<boolean>(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const originalCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -1128,6 +1141,308 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
     }, 100);
   }, [croppedImage, originalImage, selectedColors, tolerance, showRedBackground, desaturateResult]);
 
+  // Asset Management Functions
+  const saveAssetToStorage = (canvas: HTMLCanvasElement, type: 'color-selection' | 'background-removed' | 'cropped', customName?: string) => {
+    return new Promise<void>((resolve) => {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          resolve();
+          return;
+        }
+        
+        const reader = new FileReader();
+        reader.onload = () => {
+          const imageData = reader.result as string;
+          const timestamp = Date.now();
+          const elementInfo = currentProcessingElement ? ` - ${currentProcessingElement.elementType}` : '';
+          const defaultName = customName || `${type}${elementInfo} - ${new Date(timestamp).toLocaleString()}`;
+          
+          const asset = {
+            id: `asset_${timestamp}_${Math.random().toString(36).substr(2, 9)}`,
+            name: defaultName,
+            imageData,
+            timestamp,
+            type,
+            metadata: {
+              colors: Array.from(selectedColors),
+              dimensions: { width: canvas.width, height: canvas.height },
+              elementType: currentProcessingElement?.elementType
+            }
+          };
+          
+          setSavedAssets(prev => [asset, ...prev]);
+          
+          // Also save to localStorage for persistence
+          try {
+            const existingAssets = JSON.parse(localStorage.getItem('colorRangeAssets') || '[]');
+            const updatedAssets = [asset, ...existingAssets].slice(0, 50); // Keep only latest 50 assets
+            localStorage.setItem('colorRangeAssets', JSON.stringify(updatedAssets));
+          } catch (error) {
+            console.warn('Failed to save to localStorage:', error);
+          }
+          
+          resolve();
+        };
+        reader.readAsDataURL(blob);
+      }, 'image/png');
+    });
+  };
+
+  const saveAsset = async () => {
+    const canvas = resultCanvasRef.current;
+    const originalCanvas = originalCanvasRef.current;
+    
+    if (!canvas || !originalCanvas) return;
+
+    setIsProcessing(true);
+
+    try {
+      if (activeCircularMask) {
+        // Handle circular crop case - create the same canvas as downloadResult would
+        const { centerX, centerY, radius } = activeCircularMask;
+        const cropX = Math.max(0, Math.floor(centerX - radius));
+        const cropY = Math.max(0, Math.floor(centerY - radius));
+        const cropSize = Math.ceil(radius * 2);
+        
+        const circularCanvas = document.createElement('canvas');
+        const circularCtx = circularCanvas.getContext('2d');
+        if (!circularCtx) return;
+
+        circularCanvas.width = cropSize;
+        circularCanvas.height = cropSize;
+
+        const originalImageToUse = croppedImage || originalImage;
+        if (!originalImageToUse) return;
+
+        const cleanCanvas = document.createElement('canvas');
+        const cleanCtx = cleanCanvas.getContext('2d');
+        if (!cleanCtx) return;
+
+        cleanCanvas.width = originalCanvas.width;
+        cleanCanvas.height = originalCanvas.height;
+        cleanCtx.drawImage(originalImageToUse, 0, 0, cleanCanvas.width, cleanCanvas.height);
+        
+        const imageData = cleanCtx.getImageData(0, 0, cleanCanvas.width, cleanCanvas.height);
+        const resultData = circularCtx.createImageData(cropSize, cropSize);
+
+        const selectedColorObjects = Array.from(selectedColors).map(colorStr => {
+          const [r, g, b] = colorStr.split(',').map(Number);
+          return { r, g, b, a: 255 };
+        });
+
+        const relativeCenterX = centerX - cropX;
+        const relativeCenterY = centerY - cropY;
+
+        for (let y = 0; y < cropSize; y++) {
+          for (let x = 0; x < cropSize; x++) {
+            const resultIndex = (y * cropSize + x) * 4;
+            const dx = x - relativeCenterX;
+            const dy = y - relativeCenterY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance <= radius) {
+              const originalX = cropX + x;
+              const originalY = cropY + y;
+              
+              if (originalX >= 0 && originalX < originalCanvas.width && 
+                  originalY >= 0 && originalY < originalCanvas.height) {
+                
+                const originalIndex = (originalY * originalCanvas.width + originalX) * 4;
+                
+                const pixelColor = {
+                  r: imageData.data[originalIndex],
+                  g: imageData.data[originalIndex + 1],
+                  b: imageData.data[originalIndex + 2],
+                  a: imageData.data[originalIndex + 3]
+                };
+
+                let isSelected = false;
+                for (const selectedColor of selectedColorObjects) {
+                  if (colorDistance(pixelColor, selectedColor) <= tolerance) {
+                    isSelected = true;
+                    break;
+                  }
+                }
+
+                if (isSelected) {
+                  if (desaturateResult) {
+                    const desaturated = desaturateColor(imageData.data[originalIndex], imageData.data[originalIndex + 1], imageData.data[originalIndex + 2]);
+                    resultData.data[resultIndex] = desaturated.r;
+                    resultData.data[resultIndex + 1] = desaturated.g;
+                    resultData.data[resultIndex + 2] = desaturated.b;
+                    resultData.data[resultIndex + 3] = imageData.data[originalIndex + 3];
+                  } else {
+                    resultData.data[resultIndex] = imageData.data[originalIndex];
+                    resultData.data[resultIndex + 1] = imageData.data[originalIndex + 1];
+                    resultData.data[resultIndex + 2] = imageData.data[originalIndex + 2];
+                    resultData.data[resultIndex + 3] = imageData.data[originalIndex + 3];
+                  }
+                } else {
+                  resultData.data[resultIndex] = 0;
+                  resultData.data[resultIndex + 1] = 0;
+                  resultData.data[resultIndex + 2] = 0;
+                  resultData.data[resultIndex + 3] = 0;
+                }
+              } else {
+                resultData.data[resultIndex] = 0;
+                resultData.data[resultIndex + 1] = 0;
+                resultData.data[resultIndex + 2] = 0;
+                resultData.data[resultIndex + 3] = 0;
+              }
+            } else {
+              resultData.data[resultIndex] = 0;
+              resultData.data[resultIndex + 1] = 0;
+              resultData.data[resultIndex + 2] = 0;
+              resultData.data[resultIndex + 3] = 0;
+            }
+          }
+        }
+
+        circularCtx.putImageData(resultData, 0, 0);
+        await saveAssetToStorage(circularCanvas, 'color-selection');
+      } else {
+        // Regular processing
+        const tempCanvas = document.createElement('canvas');
+        const tempCtx = tempCanvas.getContext('2d');
+        if (!tempCtx) return;
+
+        tempCanvas.width = canvas.width;
+        tempCanvas.height = canvas.height;
+
+        const originalCtx = originalCanvas.getContext('2d');
+        if (!originalCtx) return;
+
+        const imageData = originalCtx.getImageData(0, 0, originalCanvas.width, originalCanvas.height);
+        const resultData = tempCtx.createImageData(imageData.width, imageData.height);
+
+        const selectedColorObjects = Array.from(selectedColors).map(colorStr => {
+          const [r, g, b] = colorStr.split(',').map(Number);
+          return { r, g, b, a: 255 };
+        });
+
+        for (let y = 0; y < imageData.height; y++) {
+          for (let x = 0; x < imageData.width; x++) {
+            const i = (y * imageData.width + x) * 4;
+            
+            const pixelColor = {
+              r: imageData.data[i],
+              g: imageData.data[i + 1],
+              b: imageData.data[i + 2],
+              a: imageData.data[i + 3]
+            };
+
+            let isSelected = false;
+            for (const selectedColor of selectedColorObjects) {
+              if (colorDistance(pixelColor, selectedColor) <= tolerance) {
+                isSelected = true;
+                break;
+              }
+            }
+
+            if (isSelected) {
+              if (desaturateResult) {
+                const desaturated = desaturateColor(imageData.data[i], imageData.data[i + 1], imageData.data[i + 2]);
+                resultData.data[i] = desaturated.r;
+                resultData.data[i + 1] = desaturated.g;
+                resultData.data[i + 2] = desaturated.b;
+                resultData.data[i + 3] = imageData.data[i + 3];
+              } else {
+                resultData.data[i] = imageData.data[i];
+                resultData.data[i + 1] = imageData.data[i + 1];
+                resultData.data[i + 2] = imageData.data[i + 2];
+                resultData.data[i + 3] = imageData.data[i + 3];
+              }
+            } else {
+              resultData.data[i] = 0;
+              resultData.data[i + 1] = 0;
+              resultData.data[i + 2] = 0;
+              resultData.data[i + 3] = 0;
+            }
+          }
+        }
+
+        tempCtx.putImageData(resultData, 0, 0);
+
+        // Auto-crop to content bounds
+        let minX = tempCanvas.width, minY = tempCanvas.height, maxX = 0, maxY = 0, hasContent = false;
+
+        for (let y = 0; y < tempCanvas.height; y++) {
+          for (let x = 0; x < tempCanvas.width; x++) {
+            const index = (y * tempCanvas.width + x) * 4;
+            if (resultData.data[index + 3] > 0) {
+              hasContent = true;
+              minX = Math.min(minX, x); minY = Math.min(minY, y);
+              maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+            }
+          }
+        }
+
+        if (hasContent) {
+          const padding = 2;
+          const cropX = Math.max(0, minX - padding);
+          const cropY = Math.max(0, minY - padding);
+          const cropWidth = Math.min(tempCanvas.width - cropX, maxX - minX + 1 + padding * 2);
+          const cropHeight = Math.min(tempCanvas.height - cropY, maxY - minY + 1 + padding * 2);
+
+          const croppedCanvas = document.createElement('canvas');
+          const croppedCtx = croppedCanvas.getContext('2d');
+          if (!croppedCtx) return;
+
+          croppedCanvas.width = cropWidth;
+          croppedCanvas.height = cropHeight;
+          croppedCtx.putImageData(tempCtx.getImageData(cropX, cropY, cropWidth, cropHeight), 0, 0);
+
+          await saveAssetToStorage(croppedCanvas, 'color-selection');
+        }
+      }
+    } catch (error) {
+      console.error('Error saving asset:', error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const deleteAsset = (assetId: string) => {
+    setSavedAssets(prev => prev.filter(asset => asset.id !== assetId));
+    
+    // Also remove from localStorage
+    try {
+      const existingAssets = JSON.parse(localStorage.getItem('colorRangeAssets') || '[]');
+      const updatedAssets = existingAssets.filter((asset: any) => asset.id !== assetId);
+      localStorage.setItem('colorRangeAssets', JSON.stringify(updatedAssets));
+    } catch (error) {
+      console.warn('Failed to update localStorage:', error);
+    }
+  };
+
+  const downloadAsset = (asset: any) => {
+    const a = document.createElement('a');
+    a.href = asset.imageData;
+    a.download = `${asset.name}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const clearAllAssets = () => {
+    setSavedAssets([]);
+    try {
+      localStorage.removeItem('colorRangeAssets');
+    } catch (error) {
+      console.warn('Failed to clear localStorage:', error);
+    }
+  };
+
+  // Load saved assets from localStorage on component mount
+  useEffect(() => {
+    try {
+      const savedAssetsFromStorage = JSON.parse(localStorage.getItem('colorRangeAssets') || '[]');
+      setSavedAssets(savedAssetsFromStorage);
+    } catch (error) {
+      console.warn('Failed to load assets from localStorage:', error);
+    }
+  }, []);
+
   const downloadResult = () => {
     const canvas = resultCanvasRef.current;
     if (!canvas) return;
@@ -1419,9 +1734,8 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
   // Background removal function
   const removeBackground = () => {
     const originalCanvas = originalCanvasRef.current;
-    const resultCanvas = resultCanvasRef.current;
     
-    if (!originalCanvas || !resultCanvas || selectedColors.size === 0) {
+    if (!originalCanvas || selectedColors.size === 0) {
       alert('Please select colors first to remove background');
       return;
     }
@@ -1430,38 +1744,15 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
 
     try {
       const originalCtx = originalCanvas.getContext('2d');
-      const resultCtx = resultCanvas.getContext('2d');
       
-      if (!originalCtx || !resultCtx) {
+      if (!originalCtx) {
         throw new Error('Could not get canvas context');
       }
 
-      // Get the original image data from the source canvas
-      const originalImageToUse = croppedImage || originalImage;
-      if (!originalImageToUse) {
-        throw new Error('No image available');
-      }
-
-      // Create a clean canvas with just the original image data
-      const cleanCanvas = document.createElement('canvas');
-      const cleanCtx = cleanCanvas.getContext('2d');
-      if (!cleanCtx) {
-        throw new Error('Could not create clean canvas');
-      }
-
-      cleanCanvas.width = originalCanvas.width;
-      cleanCanvas.height = originalCanvas.height;
-      cleanCtx.drawImage(originalImageToUse, 0, 0, cleanCanvas.width, cleanCanvas.height);
-      
-      const imageData = cleanCtx.getImageData(0, 0, cleanCanvas.width, cleanCanvas.height);
-
-      // Set result canvas size to match
-      resultCanvas.width = cleanCanvas.width;
-      resultCanvas.height = cleanCanvas.height;
-      resultCanvas.style.width = originalCanvas.style.width;
-      resultCanvas.style.height = originalCanvas.style.height;
-
-      const resultData = resultCtx.createImageData(imageData.width, imageData.height);
+      // Get the current image data from the canvas (which may already be modified)
+      // This ensures we work with whatever is currently displayed
+      const imageData = originalCtx.getImageData(0, 0, originalCanvas.width, originalCanvas.height);
+      const modifiedData = originalCtx.createImageData(imageData.width, imageData.height);
 
       // Convert selected colors to RGB values for comparison
       const selectedRGBColors = Array.from(selectedColors).map(colorStr => {
@@ -1489,24 +1780,36 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
 
         // If pixel matches selected colors, make it transparent
         if (shouldRemove) {
-          resultData.data[i] = 0;     // R
-          resultData.data[i + 1] = 0; // G  
-          resultData.data[i + 2] = 0; // B
-          resultData.data[i + 3] = 0; // A (transparent)
+          modifiedData.data[i] = 0;     // R
+          modifiedData.data[i + 1] = 0; // G  
+          modifiedData.data[i + 2] = 0; // B
+          modifiedData.data[i + 3] = 0; // A (transparent)
         } else {
           // Keep the original pixel
-          resultData.data[i] = imageData.data[i];       // R
-          resultData.data[i + 1] = imageData.data[i + 1]; // G
-          resultData.data[i + 2] = imageData.data[i + 2]; // B
-          resultData.data[i + 3] = imageData.data[i + 3]; // A
+          modifiedData.data[i] = imageData.data[i];       // R
+          modifiedData.data[i + 1] = imageData.data[i + 1]; // G
+          modifiedData.data[i + 2] = imageData.data[i + 2]; // B
+          modifiedData.data[i + 3] = imageData.data[i + 3]; // A
         }
       }
 
-      // Apply the modified image data to the result canvas (this shows the preview)
-      resultCtx.putImageData(resultData, 0, 0);
+      // Apply the background-removed image to the original canvas (target image)
+      originalCtx.putImageData(modifiedData, 0, 0);
       
       // Mark that background has been removed
       setBackgroundRemoved(true);
+      
+      // Clear any existing color selections since the source image has changed
+      setSelectedColors(new Set());
+      
+      // Clear the result canvas since we now need to reselect colors
+      const resultCanvas = resultCanvasRef.current;
+      if (resultCanvas) {
+        const resultCtx = resultCanvas.getContext('2d');
+        if (resultCtx) {
+          resultCtx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+        }
+      }
 
     } catch (error) {
       console.error('Error removing background:', error);
@@ -1518,10 +1821,10 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
 
   // Download background-removed result
   const downloadBackgroundRemoved = () => {
-    const resultCanvas = resultCanvasRef.current;
-    if (!resultCanvas) return;
+    const originalCanvas = originalCanvasRef.current;
+    if (!originalCanvas || !backgroundRemoved) return;
 
-    resultCanvas.toBlob((blob) => {
+    originalCanvas.toBlob((blob) => {
       if (!blob) return;
       
       const url = URL.createObjectURL(blob);
@@ -1537,9 +1840,34 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
 
   // Restore original result (undo background removal)
   const restoreOriginalResult = () => {
-    if (selectedColors.size > 0) {
-      setBackgroundRemoved(false);
-      processImage(activeCircularMask || undefined);
+    setBackgroundRemoved(false);
+    setSelectedColors(new Set());
+    
+    // Restore the current working image (could be a processing element or original image)
+    if (currentProcessingElement) {
+      // If we're processing a specific element, restore that element's image
+      const img = new Image();
+      img.onload = () => {
+        drawOriginalImage(img);
+        analyzeImageColors(img);
+      };
+      img.src = currentProcessingElement.imageData;
+    } else {
+      // Otherwise restore the original or cropped image
+      const originalImageToUse = croppedImage || originalImage;
+      if (originalImageToUse) {
+        drawOriginalImage(originalImageToUse);
+        analyzeImageColors(originalImageToUse);
+      }
+    }
+    
+    // Clear the result canvas
+    const resultCanvas = resultCanvasRef.current;
+    if (resultCanvas) {
+      const ctx = resultCanvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+      }
     }
   };
 
@@ -1859,40 +2187,53 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
                 {selectedElements.length > 0 && (
                   <div className="mt-4">
                     <h4 className="font-medium mb-2">Selected Elements ({selectedElements.length})</h4>
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                      {selectedElements.map((element) => (
-                        <div key={element.id} className={`border rounded-lg p-2 ${isDarkMode ? 'border-gray-600 bg-gray-700' : 'border-gray-300 bg-gray-50'}`}>
-                          <img 
-                            src={element.imageData} 
-                            alt={`Element ${element.elementType}`}
-                            className="w-full h-20 object-cover rounded mb-2"
-                          />
-                          <div className="text-xs">
-                            <div className="font-medium">{element.elementType}</div>
-                            <div className={`${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                              {(element.confidence * 100).toFixed(1)}% confidence
+                    <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
+                      {selectedElements.map((element) => {
+                        // Calculate aspect ratio of the element's bounding box
+                        const elementWidth = element.boundingBox?.width || 1;
+                        const elementHeight = element.boundingBox?.height || 1;
+                        const aspectRatio = elementWidth / elementHeight;
+                        
+                        // Use 9/16 (portrait) for tall elements, square for wide/square elements
+                        const usePortraitRatio = aspectRatio < 1.2; // If element is taller or nearly square
+                        const aspectRatioClass = usePortraitRatio ? 'aspect-[4/5]' : 'aspect-square';
+                        
+                        return (
+                          <div key={element.id} className={`border rounded-md p-1.5 ${isDarkMode ? 'border-gray-600 bg-gray-700' : 'border-gray-300 bg-gray-50'}`}>
+                            <div className={`w-full ${aspectRatioClass} rounded mb-1.5 overflow-hidden bg-gray-100 ${isDarkMode ? 'bg-gray-600' : ''}`}>
+                              <img 
+                                src={element.imageData} 
+                                alt={`Element ${element.elementType}`}
+                                className="w-full h-full object-contain"
+                              />
+                            </div>
+                            <div className="text-[10px]">
+                              <div className="font-medium truncate">{element.elementType}</div>
+                              <div className={`${isDarkMode ? 'text-gray-400' : 'text-gray-600'} truncate`}>
+                                {(element.confidence * 100).toFixed(0)}%
+                              </div>
+                            </div>
+                            <div className="flex gap-1 mt-1.5">
+                              <Button
+                                onClick={() => processSelectedElement(element)}
+                                variant="default"
+                                size="sm"
+                                className="flex-1 text-[10px] h-6 px-1"
+                              >
+                                Process
+                              </Button>
+                              <Button
+                                onClick={() => removeElementFromProcessingList(element.id)}
+                                variant="outline"
+                                size="sm"
+                                className="text-[10px] h-6 w-6 p-0"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </Button>
                             </div>
                           </div>
-                          <div className="flex gap-1 mt-2">
-                            <Button
-                              onClick={() => processSelectedElement(element)}
-                              variant="default"
-                              size="sm"
-                              className="flex-1 text-xs"
-                            >
-                              Process
-                            </Button>
-                            <Button
-                              onClick={() => removeElementFromProcessingList(element.id)}
-                              variant="outline"
-                              size="sm"
-                              className="text-xs"
-                            >
-                              <X className="w-3 h-3" />
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -2321,13 +2662,13 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
                 </div>
                 
                 <Button
-                  onClick={downloadResult}
+                  onClick={saveAsset}
                   disabled={isProcessing}
                   className="w-full text-xs flex items-center gap-1"
                   size="sm"
                 >
                   <Download className="w-3 h-3" />
-                  Download PNG
+                  Save Asset
                 </Button>
                 
                 <Button
@@ -2376,8 +2717,116 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
                   <RotateCcw className="w-3 h-3" />
                   Reset Selection
                 </Button>
+
+                {savedAssets.length > 0 && (
+                  <Button
+                    onClick={() => setShowAssetsPanel(!showAssetsPanel)}
+                    variant="outline"
+                    size="sm"
+                    className={`w-full text-xs flex items-center gap-1 ${isDarkMode ? 'border-gray-600 text-white hover:bg-gray-800' : 'border-gray-300 text-gray-900 hover:bg-gray-50'}`}
+                  >
+                    <Download className="w-3 h-3" />
+                    View Assets ({savedAssets.length})
+                  </Button>
+                )}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Floating Assets Panel */}
+      {savedAssets.length > 0 && (
+        <div className={`fixed bottom-4 right-4 z-50`}>
+          <Button
+            onClick={() => setShowAssetsPanel(!showAssetsPanel)}
+            className={`mb-2 flex items-center gap-2 ${isDarkMode ? 'bg-gray-800 border-gray-600 text-white hover:bg-gray-700' : 'bg-white border-gray-300 text-gray-900 hover:bg-gray-50'} border shadow-lg`}
+            variant="outline"
+            size="sm"
+          >
+            <Download className="w-4 h-4" />
+            Assets ({savedAssets.length})
+          </Button>
+        </div>
+      )}
+
+      {showAssetsPanel && (
+        <div className={`fixed bottom-16 right-4 w-80 max-h-96 z-50 ${isDarkMode ? 'bg-gray-900 border-gray-700 text-white' : 'bg-white border-gray-200 text-gray-900'} border rounded-lg shadow-lg overflow-hidden`}>
+          <div className={`p-3 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+            <div className="flex items-center justify-between">
+              <h4 className={`font-semibold text-sm ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Saved Assets</h4>
+              <div className="flex items-center gap-2">
+                <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{savedAssets.length} items</span>
+                <Button
+                  onClick={clearAllAssets}
+                  variant="ghost"
+                  size="sm"
+                  className={`h-6 px-2 text-xs ${isDarkMode ? 'text-gray-400 hover:text-white hover:bg-gray-800' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'}`}
+                >
+                  Clear All
+                </Button>
+                <Button
+                  onClick={() => setShowAssetsPanel(false)}
+                  variant="ghost"
+                  size="sm"
+                  className={`h-6 w-6 p-0 ${isDarkMode ? 'text-gray-400 hover:text-white hover:bg-gray-800' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'}`}
+                >
+                  <X className="w-3 h-3" />
+                </Button>
+              </div>
+            </div>
+          </div>
+          
+          <div className="p-2 max-h-80 overflow-y-auto">
+            <div className="grid grid-cols-2 gap-2">
+              {savedAssets.map((asset) => (
+                <div key={asset.id} className={`border rounded-lg p-2 ${isDarkMode ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-gray-50'}`}>
+                  <div className="aspect-square rounded mb-2 overflow-hidden bg-gray-100 dark:bg-gray-600">
+                    <img 
+                      src={asset.imageData} 
+                      alt={asset.name}
+                      className="w-full h-full object-contain"
+                    />
+                  </div>
+                  <div className="text-[10px] space-y-1">
+                    <div className="font-medium truncate" title={asset.name}>
+                      {asset.name}
+                    </div>
+                    <div className={`${isDarkMode ? 'text-gray-400' : 'text-gray-600'} truncate`}>
+                      {asset.type.replace('-', ' ')}
+                    </div>
+                    {asset.metadata?.dimensions && (
+                      <div className={`${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                        {asset.metadata.dimensions.width}×{asset.metadata.dimensions.height}
+                      </div>
+                    )}
+                    <div className={`${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                      {new Date(asset.timestamp).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <div className="flex gap-1 mt-2">
+                    <Button
+                      onClick={() => downloadAsset(asset)}
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 text-[10px] h-6 px-1"
+                      title="Download Asset"
+                    >
+                      <Download className="w-2.5 h-2.5" />
+                    </Button>
+                    <Button
+                      onClick={() => deleteAsset(asset.id)}
+                      variant="outline"
+                      size="sm"
+                      className="text-[10px] h-6 w-6 p-0"
+                      title="Delete Asset"
+                    >
+                      <X className="w-2.5 h-2.5" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
