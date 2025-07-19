@@ -26,19 +26,10 @@ interface DetectedRegion {
   elementType: 'logo' | 'text' | 'button' | 'graphic' | 'shape' | 'unknown';
 }
 
-interface CroppedResult {
-  id: string;
-  region: DetectedRegion;
-  imageData: string; // base64 data URL
-  selectedColors: Set<string>;
-  timestamp: number;
-}
-
 interface InteractiveElementDetectorProps {
   imageSrc: string | null;
   onCropRegion?: (region: DetectedRegion) => void;
   onShowPreview?: (imageData: string, element: DetectedElement) => void;
-  selectedColors?: Set<string>;
   isVisible?: boolean;
 }
 
@@ -46,7 +37,6 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
   imageSrc,
   onCropRegion,
   onShowPreview,
-  selectedColors = new Set(),
   isVisible = true
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -438,7 +428,7 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
             <input
               type="range"
               min="0"
-              max="200"
+              max="1400"
               value={paddingFactor}
               onChange={(e) => setPaddingFactor(Number(e.target.value))}
               className="flex-1"

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
-import { Download, Upload, RotateCcw, Palette, Crop, ZoomIn, Eye, Moon, Sun, Plus, X, Eraser } from 'lucide-react';
+import { Download, Upload, RotateCcw, Palette, Crop, ZoomIn, Eye, Moon, Sun, X, Eraser } from 'lucide-react';
 import InteractiveElementDetector from './InteractiveElementDetector';
 import CroppedResultsList from './CroppedResultsList';
 
@@ -133,31 +133,6 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
     // Using luminance formula for better grayscale conversion
     const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
     return { r: gray, g: gray, b: gray };
-  };
-
-  // Helper function to calculate color brightness (luminance)
-  const getColorBrightness = (r: number, g: number, b: number): number => {
-    // Using relative luminance formula
-    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  };
-
-  // Helper function to calculate color saturation
-  const getColorSaturation = (r: number, g: number, b: number): number => {
-    const max = Math.max(r, g, b) / 255;
-    const min = Math.min(r, g, b) / 255;
-    return max === 0 ? 0 : (max - min) / max;
-  };
-
-  // Helper function to classify colors
-  const classifyColor = (r: number, g: number, b: number) => {
-    const brightness = getColorBrightness(r, g, b);
-    const saturation = getColorSaturation(r, g, b);
-    
-    const isDark = brightness < 0.3;
-    const isLight = brightness > 0.7;
-    const isColorful = saturation > 0.3; // Has significant color content
-    
-    return { isDark, isLight, isColorful, brightness, saturation };
   };
 
   // Contrast-based circle detection algorithm - REMOVED
@@ -468,17 +443,6 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
     }, 1500);
   };
 
-  // Handle ML feature selection (for future enhancements)
-  const handleMLFeatureSelect = (feature: any) => {
-    console.log('ML feature selected:', feature);
-    // Could be used for additional feature-specific processing
-  };
-
-  // Handle cropped results from interactive detection
-  const handleCroppedResult = (result: any) => {
-    setCroppedResults(prev => [result, ...prev]);
-  };
-
   // Add element to selected elements list for processing
   const addElementToProcessingList = (element: any) => {
     console.log('Adding element to processing list:', element);
@@ -513,16 +477,6 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
       setBackgroundRemoved(false);
     };
     img.src = element.imageData;
-  };
-
-  // Move to processing step (kept for compatibility but not used in current workflow)
-  const startProcessing = () => {
-    if (selectedElements.length > 0) {
-      // Instead of moving to processing step, show options to process individual elements
-      console.log(`${selectedElements.length} elements available for individual processing`);
-    } else {
-      alert('Please select at least one element to process');
-    }
   };
 
   // Return to element selection from processing
@@ -648,30 +602,11 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
           // Analyze colors of the cropped element
           console.log('About to analyze colors of cropped element');
           analyzeImageColors(previewImg);
-          console.log('Finished analyzing colors of cropped element');
+          console.log('Analyzed colors of cropped element');
         }
       }
     };
     previewImg.src = imageData;
-  };
-
-  // Add preview to cropped results list
-  const addPreviewToResults = () => {
-    if (previewElement) {
-      const result = {
-        id: `crop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        region: {
-          ...previewElement.element.boundingBox,
-          confidence: previewElement.element.confidence,
-          elementType: previewElement.element.elementType
-        },
-        imageData: previewElement.imageData,
-        selectedColors: new Set(selectedColors),
-        timestamp: Date.now()
-      };
-      setCroppedResults(prev => [result, ...prev]);
-      setPreviewElement(null); // Clear preview after adding
-    }
   };
 
   // Delete a cropped result
@@ -894,11 +829,7 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
     const workingImage = croppedImage || originalImage;
     if (!workingImage || selectedColors.size === 0) return;
 
-    // Don't process if we're showing a preview from interactive detection
-    if (previewElement) {
-      console.log('Skipping processImage - preview mode active');
-      return;
-    }
+    console.log('Processing image with', selectedColors.size, 'selected colors, preview mode:', !!previewElement);
 
     setIsProcessing(true);
     
@@ -1698,7 +1629,7 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
       // Reset background removed state when colors change
       setBackgroundRemoved(false);
       
-      // Immediately process with the current circular mask
+      // Always process when colors are selected (works for both normal and preview mode)
       setTimeout(() => {
         if (newSelected.size > 0) {
           processImage(activeCircularMask || undefined);
@@ -1714,7 +1645,7 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
     setSelectedColors(allColors);
     setBackgroundRemoved(false);
     
-    // Immediately process with the current circular mask
+    // Always process when colors are selected (works for both normal and preview mode)
     if (allColors.size > 0) {
       setTimeout(() => processImage(activeCircularMask || undefined), 0);
     }
@@ -1727,11 +1658,11 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
 
   // Auto-process when selection or tolerance changes
   useEffect(() => {
-    // Don't auto-process when we're showing a preview from interactive detection
-    if (selectedColors.size > 0 && !backgroundRemoved && !previewElement) {
+    // Always auto-process when colors are selected (works for both normal and preview mode)
+    if (selectedColors.size > 0 && !backgroundRemoved) {
       processImage(activeCircularMask || undefined);
     }
-  }, [selectedColors, tolerance, processImage, activeCircularMask, backgroundRemoved, previewElement]);
+  }, [selectedColors, tolerance, processImage, activeCircularMask, backgroundRemoved]);
 
   // Debounced effect for circular mask analysis
   useEffect(() => {
@@ -1740,15 +1671,15 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
         const imageToUse = croppedImage || originalImage;
         analyzeImageColors(imageToUse, activeCircularMask);
         
-        // Also trigger processing if colors are already selected (but not during preview)
-        if (selectedColors.size > 0 && !previewElement) {
+        // Also trigger processing if colors are already selected
+        if (selectedColors.size > 0) {
           processImage(activeCircularMask);
         }
       }, 300); // 300ms delay to prevent too frequent analysis
       
       return () => clearTimeout(timeoutId);
     }
-  }, [activeCircularMask, originalImage, croppedImage, selectedColors.size, processImage, previewElement]);
+  }, [activeCircularMask, originalImage, croppedImage, selectedColors.size, processImage]);
 
   // Redraw image when canvas ref becomes available
   useEffect(() => {
@@ -1993,7 +1924,6 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
                         handleShowPreview(imageData, element);
                         addElementToProcessingList({ imageData, ...element });
                       }}
-                      selectedColors={selectedColors}
                       isVisible={showInteractiveDetection}
                     />
                   </div>
