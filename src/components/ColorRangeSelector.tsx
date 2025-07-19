@@ -1068,7 +1068,107 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
         resultCtx.fillRect(0, 0, resultCanvas.width, resultCanvas.height);
       }
 
-      // Create a clean canvas with the original image data at full resolution
+      // In preview mode, use the cropped element image data directly
+      if (previewElement) {
+        console.log('Processing preview element with cropped image data');
+        
+        // Load the preview element image
+        const previewImg = new Image();
+        previewImg.onload = () => {
+          // Set result canvas to match preview element dimensions
+          resultCanvas.width = previewImg.width;
+          resultCanvas.height = previewImg.height;
+          
+          // Calculate display size maintaining aspect ratio
+          const maxDisplayWidth = 450;
+          const maxDisplayHeight = 350;
+          const displayRatio = Math.min(maxDisplayWidth / previewImg.width, maxDisplayHeight / previewImg.height);
+          
+          const displayWidth = Math.floor(previewImg.width * displayRatio);
+          const displayHeight = Math.floor(previewImg.height * displayRatio);
+          
+          resultCanvas.style.width = `${displayWidth}px`;
+          resultCanvas.style.height = `${displayHeight}px`;
+          
+          // Create clean canvas with preview element data
+          const cleanCanvas = document.createElement('canvas');
+          const cleanCtx = cleanCanvas.getContext('2d');
+          if (!cleanCtx) {
+            setIsProcessing(false);
+            return;
+          }
+
+          cleanCanvas.width = previewImg.width;
+          cleanCanvas.height = previewImg.height;
+          cleanCtx.drawImage(previewImg, 0, 0);
+          
+          const imageData = cleanCtx.getImageData(0, 0, cleanCanvas.width, cleanCanvas.height);
+          const resultData = resultCtx.createImageData(imageData.width, imageData.height);
+
+          const selectedColorObjects = Array.from(selectedColors).map(colorStr => {
+            const [r, g, b] = colorStr.split(',').map(Number);
+            return { r, g, b, a: 255 };
+          });
+
+          // Process pixels using preview element data
+          for (let y = 0; y < imageData.height; y++) {
+            for (let x = 0; x < imageData.width; x++) {
+              const i = (y * imageData.width + x) * 4;
+              
+              const pixelColor = {
+                r: imageData.data[i],
+                g: imageData.data[i + 1],
+                b: imageData.data[i + 2],
+                a: imageData.data[i + 3]
+              };
+
+              let isSelected = false;
+              let minDistance = Infinity;
+              
+              for (const selectedColor of selectedColorObjects) {
+                const distance = colorDistance(pixelColor, selectedColor);
+                minDistance = Math.min(minDistance, distance);
+                if (distance <= tolerance) {
+                  isSelected = true;
+                  break;
+                }
+              }
+
+              if (isSelected) {
+                if (desaturateResult) {
+                  const desaturated = desaturateColor(imageData.data[i], imageData.data[i + 1], imageData.data[i + 2]);
+                  resultData.data[i] = desaturated.r;
+                  resultData.data[i + 1] = desaturated.g;
+                  resultData.data[i + 2] = desaturated.b;
+                  resultData.data[i + 3] = imageData.data[i + 3];
+                } else {
+                  resultData.data[i] = imageData.data[i];
+                  resultData.data[i + 1] = imageData.data[i + 1];
+                  resultData.data[i + 2] = imageData.data[i + 2];
+                  resultData.data[i + 3] = imageData.data[i + 3];
+                }
+              } else if (showRedBackground) {
+                resultData.data[i] = 255;
+                resultData.data[i + 1] = 0;
+                resultData.data[i + 2] = 0;
+                resultData.data[i + 3] = 255;
+              } else {
+                resultData.data[i] = 0;
+                resultData.data[i + 1] = 0;
+                resultData.data[i + 2] = 0;
+                resultData.data[i + 3] = 0;
+              }
+            }
+          }
+
+          resultCtx.putImageData(resultData, 0, 0);
+          setIsProcessing(false);
+        };
+        previewImg.src = previewElement.imageData;
+        return;
+      }
+
+      // Normal mode: Create a clean canvas with the original image data at full resolution
       const originalImageToUse = croppedImage || originalImage;
       const cleanCanvas = document.createElement('canvas');
       const cleanCtx = cleanCanvas.getContext('2d');
