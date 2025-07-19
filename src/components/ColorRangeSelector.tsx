@@ -289,15 +289,18 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
     const displayClickX = event.clientX - rect.left;
     const displayClickY = event.clientY - rect.top;
     
+    // Calculate scaling from display size to internal canvas size
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     
     return {
       display: { x: displayClickX, y: displayClickY },
       actual: { 
-        x: Math.floor(displayClickX * scaleX), 
-        y: Math.floor(displayClickY * scaleY) 
-      }
+        // Use precise rounding and clamp to canvas bounds
+        x: Math.max(0, Math.min(canvas.width - 1, Math.round(displayClickX * scaleX))), 
+        y: Math.max(0, Math.min(canvas.height - 1, Math.round(displayClickY * scaleY)))
+      },
+      scales: { x: scaleX, y: scaleY } // Include scale info for debugging
     };
   };
 
@@ -385,21 +388,48 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
 
   const applyCrop = () => {
     const workingImage = croppedImage || originalImage;
-    if (!workingImage || !cropArea) return;
+    if (!workingImage || !cropArea || !originalImage) return;
 
     const croppedCanvas = document.createElement('canvas');
     const ctx = croppedCanvas.getContext('2d');
     if (!ctx) return;
 
-    // Set canvas to crop dimensions
-    croppedCanvas.width = cropArea.width;
-    croppedCanvas.height = cropArea.height;
+    // Calculate scale factor from internal canvas to original image
+    const internalCanvas = originalCanvasRef.current;
+    if (!internalCanvas) return;
+    
+    const scaleToOriginalX = originalImage.width / internalCanvas.width;
+    const scaleToOriginalY = originalImage.height / internalCanvas.height;
+    
+    // Scale crop area coordinates to original image dimensions
+    const originalCropArea = {
+      x: Math.round(cropArea.x * scaleToOriginalX),
+      y: Math.round(cropArea.y * scaleToOriginalY),
+      width: Math.round(cropArea.width * scaleToOriginalX),
+      height: Math.round(cropArea.height * scaleToOriginalY)
+    };
 
-    // Draw the cropped portion from the current working image
+    // Set canvas to ONLY the size of the cropped area for maximum quality
+    croppedCanvas.width = originalCropArea.width;
+    croppedCanvas.height = originalCropArea.height;
+
+    console.log('Crop scaling info:', {
+      internalCanvasSize: `${internalCanvas.width}x${internalCanvas.height}`,
+      originalImageSize: `${originalImage.width}x${originalImage.height}`,
+      scaleFactor: `${scaleToOriginalX.toFixed(3)}, ${scaleToOriginalY.toFixed(3)}`,
+      cropAreaInternal: `${cropArea.x}, ${cropArea.y}, ${cropArea.width}x${cropArea.height}`,
+      cropAreaOriginal: `${originalCropArea.x}, ${originalCropArea.y}, ${originalCropArea.width}x${originalCropArea.height}`,
+      croppedCanvasSize: `${croppedCanvas.width}x${croppedCanvas.height}`
+    });
+
+    // Fill with transparent background
+    ctx.clearRect(0, 0, croppedCanvas.width, croppedCanvas.height);
+
+    // Draw only the cropped portion filling the entire canvas using ORIGINAL image coordinates
     ctx.drawImage(
       workingImage,
-      cropArea.x, cropArea.y, cropArea.width, cropArea.height,
-      0, 0, cropArea.width, cropArea.height
+      originalCropArea.x, originalCropArea.y, originalCropArea.width, originalCropArea.height,
+      0, 0, originalCropArea.width, originalCropArea.height
     );
 
     // Convert to image
@@ -513,20 +543,40 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
 
   // Handle preview from interactive detection
   const handleShowPreview = (imageData: string, element: any) => {
+    console.log('handleShowPreview called with:', {
+      imageDataLength: imageData.length,
+      elementType: element.elementType,
+      boundingBox: element.boundingBox
+    });
+    
+    // Clear any previous color selections to prevent auto-processing interference
+    setSelectedColors(new Set());
+    setBackgroundRemoved(false);
+    
     setPreviewElement({ imageData, element });
     
     // Create an image from the cropped data and display it in the results canvas
     const previewImg = new Image();
     previewImg.onload = () => {
+      console.log('Preview image loaded:', {
+        imageSize: `${previewImg.width}x${previewImg.height}`,
+        src: imageData.substring(0, 50) + '...'
+      });
+      
       const resultCanvas = resultCanvasRef.current;
       if (!resultCanvas) return;
       
       const ctx = resultCanvas.getContext('2d');
       if (!ctx) return;
       
-      // Set canvas size to match the preview image
+      // Set canvas size to match the preview image (cropped element)
       resultCanvas.width = previewImg.width;
       resultCanvas.height = previewImg.height;
+      
+      console.log('BEFORE setting result canvas:', {
+        resultCanvasSize: `${resultCanvas.width}x${resultCanvas.height}`,
+        previewImageSize: `${previewImg.width}x${previewImg.height}`
+      });
       
       // Calculate display size maintaining aspect ratio
       const maxDisplayWidth = 450;
@@ -539,78 +589,67 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
       resultCanvas.style.width = `${displayWidth}px`;
       resultCanvas.style.height = `${displayHeight}px`;
       
-      // Clear and draw the preview image
+      // Clear and draw the preview image (cropped element) with white background initially
       ctx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+      
+      // Fill with white background to avoid transparency checkerboard
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, resultCanvas.width, resultCanvas.height);
+      
+      // Draw the cropped element on top
       ctx.drawImage(previewImg, 0, 0);
       
-      // Apply color filtering if colors are selected
-      if (selectedColors.size > 0) {
-        const imageData = ctx.getImageData(0, 0, resultCanvas.width, resultCanvas.height);
-        const resultData = ctx.createImageData(resultCanvas.width, resultCanvas.height);
-        
-        // Convert selected colors to ColorInfo objects
-        const selectedColorObjects = Array.from(selectedColors).map(color => {
-          const match = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-          if (match) {
-            return {
-              r: parseInt(match[1]),
-              g: parseInt(match[2]),
-              b: parseInt(match[3]),
-              a: 255
-            };
-          }
-          return { r: 0, g: 0, b: 0, a: 255 };
-        });
-        
-        // Process each pixel
-        for (let i = 0; i < imageData.data.length; i += 4) {
-          const pixelColor = {
-            r: imageData.data[i],
-            g: imageData.data[i + 1],
-            b: imageData.data[i + 2],
-            a: imageData.data[i + 3]
-          };
-
-          let isSelected = false;
+      console.log('AFTER drawing result canvas:', {
+        resultCanvasInternalSize: `${resultCanvas.width}x${resultCanvas.height}`,
+        resultCanvasDisplaySize: `${displayWidth}x${displayHeight}`,
+        drewImageSize: `${previewImg.width}x${previewImg.height}`,
+        success: 'Result canvas should now show cropped element'
+      });
+      
+      console.log('Result canvas updated with cropped element:', {
+        resultCanvasSize: `${resultCanvas.width}x${resultCanvas.height}`,
+        displaySize: `${displayWidth}x${displayHeight}`
+      });
+      
+      console.log('Preview canvas setup:', {
+        previewImageSize: `${previewImg.width}x${previewImg.height}`,
+        resultCanvasSize: `${resultCanvas.width}x${resultCanvas.height}`,
+        displaySize: `${displayWidth}x${displayHeight}`,
+        elementType: element.elementType,
+        selectedColorsCount: selectedColors.size
+      });
+      
+      // ALSO update the original canvas to show this cropped element for color selection
+      const originalCanvas = originalCanvasRef.current;
+      if (originalCanvas) {
+        const originalCtx = originalCanvas.getContext('2d');
+        if (originalCtx) {
+          // Set original canvas to match the cropped element
+          originalCanvas.width = previewImg.width;
+          originalCanvas.height = previewImg.height;
+          originalCanvas.style.width = `${displayWidth}px`;
+          originalCanvas.style.height = `${displayHeight}px`;
           
-          // Check if pixel color matches any selected color within tolerance
-          for (const selectedColor of selectedColorObjects) {
-            const dist = colorDistance(pixelColor, selectedColor);
-            if (dist <= tolerance) {
-              isSelected = true;
-              break;
-            }
-          }
-
-          if (isSelected) {
-            // Keep the original color with full opacity
-            if (desaturateResult) {
-              const desaturated = desaturateColor(
-                imageData.data[i],
-                imageData.data[i + 1],
-                imageData.data[i + 2]
-              );
-              resultData.data[i] = desaturated.r;
-              resultData.data[i + 1] = desaturated.g;
-              resultData.data[i + 2] = desaturated.b;
-              resultData.data[i + 3] = 255;
-            } else {
-              resultData.data[i] = imageData.data[i];
-              resultData.data[i + 1] = imageData.data[i + 1];
-              resultData.data[i + 2] = imageData.data[i + 2];
-              resultData.data[i + 3] = 255;
-            }
-          } else {
-            // Make transparent
-            resultData.data[i] = 0;
-            resultData.data[i + 1] = 0;
-            resultData.data[i + 2] = 0;
-            resultData.data[i + 3] = 0;
-          }
+          // Draw the cropped element in the original canvas for color selection with white background
+          originalCtx.clearRect(0, 0, originalCanvas.width, originalCanvas.height);
+          
+          // Fill with white background to match result canvas
+          originalCtx.fillStyle = '#ffffff';
+          originalCtx.fillRect(0, 0, originalCanvas.width, originalCanvas.height);
+          
+          // Draw the cropped element on top
+          originalCtx.drawImage(previewImg, 0, 0);
+          
+          console.log('Original canvas updated with cropped element:', {
+            originalCanvasSize: `${originalCanvas.width}x${originalCanvas.height}`,
+            displaySize: `${displayWidth}x${displayHeight}`
+          });
+          
+          // Analyze colors of the cropped element
+          console.log('About to analyze colors of cropped element');
+          analyzeImageColors(previewImg);
+          console.log('Finished analyzing colors of cropped element');
         }
-        
-        // Apply the filtered result
-        ctx.putImageData(resultData, 0, 0);
       }
     };
     previewImg.src = imageData;
@@ -700,33 +739,48 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
       return;
     }
 
-    // Set canvas size to match container max size while maintaining aspect ratio for DISPLAY
+    // Try a different approach: use a high-resolution internal canvas but not excessive
+    // Set internal resolution to be high quality but reasonable for browsers
+    const maxInternalWidth = Math.min(img.width, 4048); // Limit to reasonable max to avoid browser issues
+    const maxInternalHeight = Math.min(img.height, 4048);
+    
+    // Maintain aspect ratio for internal resolution
+    const internalRatio = Math.min(maxInternalWidth / img.width, maxInternalHeight / img.height);
+    const internalWidth = Math.round(img.width * internalRatio);
+    const internalHeight = Math.round(img.height * internalRatio);
+    
+    // Set display size to fit container nicely
     const maxDisplayWidth = 450;
     const maxDisplayHeight = 350;
-    const ratio = Math.min(maxDisplayWidth / img.width, maxDisplayHeight / img.height);
+    const displayRatio = Math.min(maxDisplayWidth / internalWidth, maxDisplayHeight / internalHeight);
     
-    const displayWidth = Math.floor(img.width * ratio);
-    const displayHeight = Math.floor(img.height * ratio);
+    const displayWidth = Math.round(internalWidth * displayRatio);
+    const displayHeight = Math.round(internalHeight * displayRatio);
     
-    // Set canvas internal resolution to ORIGINAL image size for high quality processing
-    canvas.width = img.width;
-    canvas.height = img.height;
+    // Set canvas internal resolution (high quality but reasonable)
+    canvas.width = internalWidth;
+    canvas.height = internalHeight;
     
-    // Set canvas display size to fit container
+    // Set canvas display size
     canvas.style.width = `${displayWidth}px`;
     canvas.style.height = `${displayHeight}px`;
     
+    // Ensure high-quality scaling
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    
     // Clear canvas first
-    ctx.clearRect(0, 0, img.width, img.height);
+    ctx.clearRect(0, 0, internalWidth, internalHeight);
     
-    // Draw the image at FULL RESOLUTION
-    ctx.drawImage(img, 0, 0, img.width, img.height);
+    // Draw the image at high internal resolution
+    ctx.drawImage(img, 0, 0, internalWidth, internalHeight);
     
-    console.log('Image drawn:', { 
-      originalSize: `${img.width}x${img.height}`, 
+    console.log('Image drawn with quality optimization:', { 
+      originalImageSize: `${img.width}x${img.height}`,
+      internalCanvasSize: `${canvas.width}x${canvas.height}`,
       displaySize: `${displayWidth}x${displayHeight}`,
-      canvasInternalSize: `${canvas.width}x${canvas.height}`,
-      canvasDisplaySize: `${canvas.style.width}x${canvas.style.height}`
+      qualityRatio: internalRatio.toFixed(3),
+      actualPixelDensity: `${(canvas.width / displayWidth).toFixed(2)}x`
     });
   };
 
@@ -742,17 +796,13 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
     const displayClickX = event.clientX - rect.left;
     const displayClickY = event.clientY - rect.top;
     
-    // Convert display coordinates to actual canvas coordinates
-    // Since canvas internal size is full resolution but display is scaled
+    // Convert display coordinates to actual canvas coordinates with high precision
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     
-    const actualX = Math.floor(displayClickX * scaleX);
-    const actualY = Math.floor(displayClickY * scaleY);
-    
-    // Ensure coordinates are within bounds
-    const x = Math.max(0, Math.min(actualX, canvas.width - 1));
-    const y = Math.max(0, Math.min(actualY, canvas.height - 1));
+    // Use precise rounding and clamp to exact pixel boundaries
+    const x = Math.max(0, Math.min(canvas.width - 1, Math.round(displayClickX * scaleX)));
+    const y = Math.max(0, Math.min(canvas.height - 1, Math.round(displayClickY * scaleY)));
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -761,10 +811,14 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
     const clickedColor = getPixelColor(imageData, x, y);
     const colorString = colorToString(clickedColor);
 
-    console.log('Click coordinates:', {
-      display: `${displayClickX}, ${displayClickY}`,
+    console.log('Click coordinates with quality info:', {
+      display: `${displayClickX.toFixed(2)}, ${displayClickY.toFixed(2)}`,
       actual: `${x}, ${y}`,
-      color: `rgb(${clickedColor.r}, ${clickedColor.g}, ${clickedColor.b})`
+      scale: `${scaleX.toFixed(4)}, ${scaleY.toFixed(4)}`,
+      color: `rgb(${clickedColor.r}, ${clickedColor.g}, ${clickedColor.b})`,
+      canvasResolution: `${canvas.width}x${canvas.height}`,
+      originalImageSize: `${originalImage.width}x${originalImage.height}`,
+      qualityMultiplier: `${(canvas.width / parseFloat(canvas.style.width)).toFixed(2)}x`
     });
 
     setSelectedColors(prev => {
@@ -840,6 +894,12 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
     const workingImage = croppedImage || originalImage;
     if (!workingImage || selectedColors.size === 0) return;
 
+    // Don't process if we're showing a preview from interactive detection
+    if (previewElement) {
+      console.log('Skipping processImage - preview mode active');
+      return;
+    }
+
     setIsProcessing(true);
     
     setTimeout(() => {
@@ -859,44 +919,56 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
         return;
       }
 
-      // If we have a circular mask, size the result canvas to the circle
+      // If we have a circular mask, maintain original canvas size but process with circle
       if (circularMask) {
         const { centerX, centerY, radius } = circularMask;
         
-        // Calculate the square bounds that contain the circle
-        const cropX = Math.max(0, Math.floor(centerX - radius));
-        const cropY = Math.max(0, Math.floor(centerY - radius));
-        const cropSize = Math.ceil(radius * 2);
+        // Scale circular mask coordinates to original image dimensions
+        const internalCanvas = originalCanvasRef.current;
+        if (!internalCanvas || !originalImage) {
+          setIsProcessing(false);
+          return;
+        }
         
-        // Set result canvas to circle size
-        resultCanvas.width = cropSize;
-        resultCanvas.height = cropSize;
+        const scaleToOriginalX = originalImage.width / internalCanvas.width;
+        const scaleToOriginalY = originalImage.height / internalCanvas.height;
+        
+        const originalCenterX = centerX * scaleToOriginalX;
+        const originalCenterY = centerY * scaleToOriginalY;
+        const originalRadius = radius * Math.min(scaleToOriginalX, scaleToOriginalY); // Use minimum scale to maintain circle shape
+        
+        // Use FULL original image dimensions for maximum quality
+        resultCanvas.width = originalImage.width;
+        resultCanvas.height = originalImage.height;
         
         // Calculate display size maintaining aspect ratio
         const maxDisplayWidth = 450;
         const maxDisplayHeight = 350;
-        const displayRatio = Math.min(maxDisplayWidth / cropSize, maxDisplayHeight / cropSize);
+        const displayRatio = Math.min(maxDisplayWidth / resultCanvas.width, maxDisplayHeight / resultCanvas.height);
         
-        const displayWidth = Math.floor(cropSize * displayRatio);
-        const displayHeight = Math.floor(cropSize * displayRatio);
+        const displayWidth = Math.floor(resultCanvas.width * displayRatio);
+        const displayHeight = Math.floor(resultCanvas.height * displayRatio);
         
         resultCanvas.style.width = `${displayWidth}px`;
         resultCanvas.style.height = `${displayHeight}px`;
         
-        console.log('Processing circular crop at full resolution:', {
-          circleSize: `${cropSize}x${cropSize}`,
+        console.log('Processing circular crop at ORIGINAL resolution:', {
+          originalImageSize: `${originalImage.width}x${originalImage.height}`,
+          resultCanvasSize: `${resultCanvas.width}x${resultCanvas.height}`,
           displaySize: `${displayWidth}x${displayHeight}`,
-          center: `(${Math.round(centerX)}, ${Math.round(centerY)})`,
-          radius: Math.round(radius)
+          internalCanvasSize: `${internalCanvas.width}x${internalCanvas.height}`,
+          scaleFactor: `${scaleToOriginalX.toFixed(3)}, ${scaleToOriginalY.toFixed(3)}`,
+          maskInternal: `center(${Math.round(centerX)}, ${Math.round(centerY)}) radius ${Math.round(radius)}`,
+          maskOriginal: `center(${Math.round(originalCenterX)}, ${Math.round(originalCenterY)}) radius ${Math.round(originalRadius)}`
         });
 
-        // Clear canvas
-        resultCtx.clearRect(0, 0, cropSize, cropSize);
+        // Clear canvas to full dimensions
+        resultCtx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
 
         // Fill with red background if enabled
         if (showRedBackground) {
           resultCtx.fillStyle = '#ff0000';
-          resultCtx.fillRect(0, 0, cropSize, cropSize);
+          resultCtx.fillRect(0, 0, resultCanvas.width, resultCanvas.height);
         }
 
         // Get the original image data (without any overlays)
@@ -906,7 +978,7 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
           return;
         }
 
-        // Create a clean canvas with just the original image data
+        // Create a clean canvas with just the original image data at full resolution
         const cleanCanvas = document.createElement('canvas');
         const cleanCtx = cleanCanvas.getContext('2d');
         if (!cleanCtx) {
@@ -914,12 +986,12 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
           return;
         }
 
-        cleanCanvas.width = originalCanvas.width;
-        cleanCanvas.height = originalCanvas.height;
+        cleanCanvas.width = resultCanvas.width;
+        cleanCanvas.height = resultCanvas.height;
         cleanCtx.drawImage(originalImageToUse, 0, 0, cleanCanvas.width, cleanCanvas.height);
         
         const imageData = cleanCtx.getImageData(0, 0, cleanCanvas.width, cleanCanvas.height);
-        const resultData = resultCtx.createImageData(cropSize, cropSize);
+        const resultData = resultCtx.createImageData(resultCanvas.width, resultCanvas.height);
 
         // Convert selected colors to ColorInfo objects
         const selectedColorObjects = Array.from(selectedColors).map(colorStr => {
@@ -927,31 +999,23 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
           return { r, g, b, a: 255 };
         });
 
-        // Calculate the circle center relative to the cropped area
-        const relativeCenterX = centerX - cropX;
-        const relativeCenterY = centerY - cropY;
-
-        // Process each pixel in the circular area
-        for (let y = 0; y < cropSize; y++) {
-          for (let x = 0; x < cropSize; x++) {
-            const resultIndex = (y * cropSize + x) * 4;
+        // Process each pixel in the full canvas, but only within the circular area
+        for (let y = 0; y < resultCanvas.height; y++) {
+          for (let x = 0; x < resultCanvas.width; x++) {
+            const resultIndex = (y * resultCanvas.width + x) * 4;
             
-            // Calculate distance from circle center
-            const dx = x - relativeCenterX;
-            const dy = y - relativeCenterY;
+            // Calculate distance from circle center using ORIGINAL image coordinates
+            const dx = x - originalCenterX;
+            const dy = y - originalCenterY;
             const distance = Math.sqrt(dx * dx + dy * dy);
             
-            // Check if pixel is within the circle
-            if (distance <= radius) {
-              // Get the original image coordinates
-              const originalX = cropX + x;
-              const originalY = cropY + y;
-              
-              // Make sure we're within the original image bounds
-              if (originalX >= 0 && originalX < originalCanvas.width && 
-                  originalY >= 0 && originalY < originalCanvas.height) {
+            // Check if pixel is within the circle using ORIGINAL radius
+            if (distance <= originalRadius) {
+              // We're within the circular bounds, process this pixel
+              if (x >= 0 && x < resultCanvas.width && 
+                  y >= 0 && y < resultCanvas.height) {
                 
-                const originalIndex = (originalY * originalCanvas.width + originalX) * 4;
+                const originalIndex = (y * resultCanvas.width + x) * 4;
                 
                 const pixelColor = {
                   r: imageData.data[originalIndex],
@@ -1017,18 +1081,11 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
                   resultData.data[resultIndex + 3] = 0;
                 }
               } else {
-                // Outside original image bounds
-                if (showRedBackground) {
-                  resultData.data[resultIndex] = 255;   // Red background
-                  resultData.data[resultIndex + 1] = 0;
-                  resultData.data[resultIndex + 2] = 0;
-                  resultData.data[resultIndex + 3] = 255;
-                } else {
-                  resultData.data[resultIndex] = 0;
-                  resultData.data[resultIndex + 1] = 0;
-                  resultData.data[resultIndex + 2] = 0;
-                  resultData.data[resultIndex + 3] = 0;
-                }
+                // Outside canvas bounds within circle - make transparent
+                resultData.data[resultIndex] = 0;
+                resultData.data[resultIndex + 1] = 0;
+                resultData.data[resultIndex + 2] = 0;
+                resultData.data[resultIndex + 3] = 0;
               }
             } else {
               // Outside circle - make transparent
@@ -1046,15 +1103,29 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
       }
 
       // Original rectangular processing
-      resultCanvas.width = originalCanvas.width;
-      resultCanvas.height = originalCanvas.height;
+      if (!originalImage) {
+        setIsProcessing(false);
+        return;
+      }
       
-      resultCanvas.style.width = originalCanvas.style.width;
-      resultCanvas.style.height = originalCanvas.style.height;
+      // Use FULL original image dimensions for maximum quality
+      resultCanvas.width = originalImage.width;
+      resultCanvas.height = originalImage.height;
+      
+      // Calculate appropriate display size
+      const maxDisplayWidth = 450;
+      const maxDisplayHeight = 350;
+      const displayRatio = Math.min(maxDisplayWidth / resultCanvas.width, maxDisplayHeight / resultCanvas.height);
+      const displayWidth = Math.floor(resultCanvas.width * displayRatio);
+      const displayHeight = Math.floor(resultCanvas.height * displayRatio);
+      
+      resultCanvas.style.width = `${displayWidth}px`;
+      resultCanvas.style.height = `${displayHeight}px`;
 
-      console.log('Processing at full resolution:', {
-        size: `${resultCanvas.width}x${resultCanvas.height}`,
-        displaySize: `${resultCanvas.style.width}x${resultCanvas.style.height}`,
+      console.log('Processing rectangular at ORIGINAL resolution:', {
+        originalImageSize: `${originalImage.width}x${originalImage.height}`,
+        resultCanvasSize: `${resultCanvas.width}x${resultCanvas.height}`,
+        displaySize: `${displayWidth}x${displayHeight}`,
         workingImage: croppedImage ? 'cropped' : 'original',
         redBackground: showRedBackground
       });
@@ -1066,7 +1137,20 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
         resultCtx.fillRect(0, 0, resultCanvas.width, resultCanvas.height);
       }
 
-      const imageData = originalCtx.getImageData(0, 0, originalCanvas.width, originalCanvas.height);
+      // Create a clean canvas with the original image data at full resolution
+      const originalImageToUse = croppedImage || originalImage;
+      const cleanCanvas = document.createElement('canvas');
+      const cleanCtx = cleanCanvas.getContext('2d');
+      if (!cleanCtx) {
+        setIsProcessing(false);
+        return;
+      }
+
+      cleanCanvas.width = resultCanvas.width;
+      cleanCanvas.height = resultCanvas.height;
+      cleanCtx.drawImage(originalImageToUse, 0, 0, cleanCanvas.width, cleanCanvas.height);
+      
+      const imageData = cleanCtx.getImageData(0, 0, cleanCanvas.width, cleanCanvas.height);
       const resultData = resultCtx.createImageData(imageData.width, imageData.height);
 
       const selectedColorObjects = Array.from(selectedColors).map(colorStr => {
@@ -1139,11 +1223,12 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
       resultCtx.putImageData(resultData, 0, 0);
       setIsProcessing(false);
     }, 100);
-  }, [croppedImage, originalImage, selectedColors, tolerance, showRedBackground, desaturateResult]);
+  }, [croppedImage, originalImage, selectedColors, tolerance, showRedBackground, desaturateResult, previewElement]);
 
   // Asset Management Functions
-  const saveAssetToStorage = (canvas: HTMLCanvasElement, type: 'color-selection' | 'background-removed' | 'cropped', customName?: string) => {
+  const saveAssetToStorage = (canvas: HTMLCanvasElement, type: 'color-selection' | 'background-removed' | 'cropped', customName?: string, suffix?: string) => {
     return new Promise<void>((resolve) => {
+      // Use maximum quality settings for PNG
       canvas.toBlob((blob) => {
         if (!blob) {
           resolve();
@@ -1155,7 +1240,8 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
           const imageData = reader.result as string;
           const timestamp = Date.now();
           const elementInfo = currentProcessingElement ? ` - ${currentProcessingElement.elementType}` : '';
-          const defaultName = customName || `${type}${elementInfo} - ${new Date(timestamp).toLocaleString()}`;
+          const suffixInfo = suffix ? ` (${suffix})` : '';
+          const defaultName = customName || `${type}${elementInfo}${suffixInfo} - ${new Date(timestamp).toLocaleString()}`;
           
           const asset = {
             id: `asset_${timestamp}_${Math.random().toString(36).substr(2, 9)}`,
@@ -1188,7 +1274,8 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
     });
   };
 
-  const saveAsset = async () => {
+  // Enhanced save function that creates both full resolution and auto-cropped versions
+  const saveAssetWithOptions = async () => {
     const canvas = resultCanvasRef.current;
     const originalCanvas = originalCanvasRef.current;
     
@@ -1198,7 +1285,7 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
 
     try {
       if (activeCircularMask) {
-        // Handle circular crop case - create the same canvas as downloadResult would
+        // For circular masks, only save the circular crop as it's intentionally sized
         const { centerX, centerY, radius } = activeCircularMask;
         const cropX = Math.max(0, Math.floor(centerX - radius));
         const cropY = Math.max(0, Math.floor(centerY - radius));
@@ -1299,21 +1386,22 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
         }
 
         circularCtx.putImageData(resultData, 0, 0);
-        await saveAssetToStorage(circularCanvas, 'color-selection');
+        await saveAssetToStorage(circularCanvas, 'color-selection', undefined, 'circular');
       } else {
-        // Regular processing
-        const tempCanvas = document.createElement('canvas');
-        const tempCtx = tempCanvas.getContext('2d');
-        if (!tempCtx) return;
+        // Regular processing - create full resolution version
+        const fullResCanvas = document.createElement('canvas');
+        const fullResCtx = fullResCanvas.getContext('2d');
+        if (!fullResCtx) return;
 
-        tempCanvas.width = canvas.width;
-        tempCanvas.height = canvas.height;
+        // Use original canvas dimensions to preserve full resolution
+        fullResCanvas.width = originalCanvas.width;
+        fullResCanvas.height = originalCanvas.height;
 
         const originalCtx = originalCanvas.getContext('2d');
         if (!originalCtx) return;
 
         const imageData = originalCtx.getImageData(0, 0, originalCanvas.width, originalCanvas.height);
-        const resultData = tempCtx.createImageData(imageData.width, imageData.height);
+        const resultData = fullResCtx.createImageData(imageData.width, imageData.height);
 
         const selectedColorObjects = Array.from(selectedColors).map(colorStr => {
           const [r, g, b] = colorStr.split(',').map(Number);
@@ -1361,14 +1449,17 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
           }
         }
 
-        tempCtx.putImageData(resultData, 0, 0);
+        fullResCtx.putImageData(resultData, 0, 0);
 
-        // Auto-crop to content bounds
-        let minX = tempCanvas.width, minY = tempCanvas.height, maxX = 0, maxY = 0, hasContent = false;
+        // Save full resolution version
+        await saveAssetToStorage(fullResCanvas, 'color-selection', undefined, `full-res ${originalCanvas.width}x${originalCanvas.height}`);
 
-        for (let y = 0; y < tempCanvas.height; y++) {
-          for (let x = 0; x < tempCanvas.width; x++) {
-            const index = (y * tempCanvas.width + x) * 4;
+        // Also create and save auto-cropped version for convenience
+        let minX = fullResCanvas.width, minY = fullResCanvas.height, maxX = 0, maxY = 0, hasContent = false;
+
+        for (let y = 0; y < fullResCanvas.height; y++) {
+          for (let x = 0; x < fullResCanvas.width; x++) {
+            const index = (y * fullResCanvas.width + x) * 4;
             if (resultData.data[index + 3] > 0) {
               hasContent = true;
               minX = Math.min(minX, x); minY = Math.min(minY, y);
@@ -1378,21 +1469,21 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
         }
 
         if (hasContent) {
-          const padding = 2;
+          const padding = 4; // Slightly larger padding for cropped version
           const cropX = Math.max(0, minX - padding);
           const cropY = Math.max(0, minY - padding);
-          const cropWidth = Math.min(tempCanvas.width - cropX, maxX - minX + 1 + padding * 2);
-          const cropHeight = Math.min(tempCanvas.height - cropY, maxY - minY + 1 + padding * 2);
+          const cropWidth = Math.min(fullResCanvas.width - cropX, maxX - minX + 1 + padding * 2);
+          const cropHeight = Math.min(fullResCanvas.height - cropY, maxY - minY + 1 + padding * 2);
 
           const croppedCanvas = document.createElement('canvas');
           const croppedCtx = croppedCanvas.getContext('2d');
-          if (!croppedCtx) return;
+          if (croppedCtx) {
+            croppedCanvas.width = cropWidth;
+            croppedCanvas.height = cropHeight;
+            croppedCtx.putImageData(fullResCtx.getImageData(cropX, cropY, cropWidth, cropHeight), 0, 0);
 
-          croppedCanvas.width = cropWidth;
-          croppedCanvas.height = cropHeight;
-          croppedCtx.putImageData(tempCtx.getImageData(cropX, cropY, cropWidth, cropHeight), 0, 0);
-
-          await saveAssetToStorage(croppedCanvas, 'color-selection');
+            await saveAssetToStorage(croppedCanvas, 'color-selection', undefined, `cropped ${cropWidth}x${cropHeight}`);
+          }
         }
       }
     } catch (error) {
@@ -1442,282 +1533,6 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
       console.warn('Failed to load assets from localStorage:', error);
     }
   }, []);
-
-  const downloadResult = () => {
-    const canvas = resultCanvasRef.current;
-    if (!canvas) return;
-
-    console.log('Processing download with circular crop...');
-    
-    console.log('Download circular mask processing:', {
-      maskActive: !!activeCircularMask,
-      selectedColors: selectedColors.size,
-      willFilterOutput: !!activeCircularMask && selectedColors.size > 0,
-      maskDetails: activeCircularMask ? `center(${Math.round(activeCircularMask.centerX)}, ${Math.round(activeCircularMask.centerY)}) radius ${Math.round(activeCircularMask.radius)}` : 'none'
-    });
-
-    const originalCanvas = originalCanvasRef.current;
-    if (!originalCanvas) return;
-
-    const originalCtx = originalCanvas.getContext('2d');
-    if (!originalCtx) return;
-
-    // If we have a circular mask, create a square canvas containing just the circle
-    if (activeCircularMask) {
-      const { centerX, centerY, radius } = activeCircularMask;
-      
-      // Calculate the square bounds that contain the circle
-      const cropX = Math.max(0, Math.floor(centerX - radius));
-      const cropY = Math.max(0, Math.floor(centerY - radius));
-      const cropSize = Math.ceil(radius * 2);
-      
-      // Create output canvas sized to the circle diameter
-      const circularCanvas = document.createElement('canvas');
-      const circularCtx = circularCanvas.getContext('2d');
-      if (!circularCtx) return;
-
-      circularCanvas.width = cropSize;
-      circularCanvas.height = cropSize;
-
-      // Get the original image data (without any overlays) from the source image
-      const originalImageToUse = croppedImage || originalImage;
-      if (!originalImageToUse) return;
-
-      // Create a clean canvas with just the original image data
-      const cleanCanvas = document.createElement('canvas');
-      const cleanCtx = cleanCanvas.getContext('2d');
-      if (!cleanCtx) return;
-
-      cleanCanvas.width = originalCanvas.width;
-      cleanCanvas.height = originalCanvas.height;
-      cleanCtx.drawImage(originalImageToUse, 0, 0, cleanCanvas.width, cleanCanvas.height);
-      
-      const imageData = cleanCtx.getImageData(0, 0, cleanCanvas.width, cleanCanvas.height);
-      const resultData = circularCtx.createImageData(cropSize, cropSize);
-
-      // Convert selected colors to ColorInfo objects
-      const selectedColorObjects = Array.from(selectedColors).map(colorStr => {
-        const [r, g, b] = colorStr.split(',').map(Number);
-        return { r, g, b, a: 255 };
-      });
-
-      // Calculate the circle center relative to the cropped area
-      const relativeCenterX = centerX - cropX;
-      const relativeCenterY = centerY - cropY;
-
-      // Process each pixel in the cropped circular area
-      for (let y = 0; y < cropSize; y++) {
-        for (let x = 0; x < cropSize; x++) {
-          const resultIndex = (y * cropSize + x) * 4;
-          
-          // Calculate distance from circle center
-          const dx = x - relativeCenterX;
-          const dy = y - relativeCenterY;
-          const distance = Math.sqrt(dx * dx + dy * dy);
-          
-          // Check if pixel is within the circle
-          if (distance <= radius) {
-            // Get the original image coordinates
-            const originalX = cropX + x;
-            const originalY = cropY + y;
-            
-            // Make sure we're within the original image bounds
-            if (originalX >= 0 && originalX < originalCanvas.width && 
-                originalY >= 0 && originalY < originalCanvas.height) {
-              
-              const originalIndex = (originalY * originalCanvas.width + originalX) * 4;
-              
-              const pixelColor = {
-                r: imageData.data[originalIndex],
-                g: imageData.data[originalIndex + 1],
-                b: imageData.data[originalIndex + 2],
-                a: imageData.data[originalIndex + 3]
-              };
-
-              let isSelected = false;
-              
-              // Check if pixel color matches any selected color within tolerance
-              for (const selectedColor of selectedColorObjects) {
-                if (colorDistance(pixelColor, selectedColor) <= tolerance) {
-                  isSelected = true;
-                  break;
-                }
-              }
-
-              if (isSelected) {
-                // Keep the original color with full opacity (or desaturated if enabled)
-                if (desaturateResult) {
-                  const desaturated = desaturateColor(
-                    imageData.data[originalIndex],
-                    imageData.data[originalIndex + 1],
-                    imageData.data[originalIndex + 2]
-                  );
-                  resultData.data[resultIndex] = desaturated.r;
-                  resultData.data[resultIndex + 1] = desaturated.g;
-                  resultData.data[resultIndex + 2] = desaturated.b;
-                  resultData.data[resultIndex + 3] = 255; // Full opacity
-                } else {
-                  resultData.data[resultIndex] = imageData.data[originalIndex];     // R
-                  resultData.data[resultIndex + 1] = imageData.data[originalIndex + 1]; // G
-                  resultData.data[resultIndex + 2] = imageData.data[originalIndex + 2]; // B
-                  resultData.data[resultIndex + 3] = 255; // Full opacity
-                }
-              } else {
-                // Make transparent for unselected colors
-                resultData.data[resultIndex] = 0;     // R
-                resultData.data[resultIndex + 1] = 0; // G
-                resultData.data[resultIndex + 2] = 0; // B
-                resultData.data[resultIndex + 3] = 0; // A (transparent)
-              }
-            } else {
-              // Outside original image bounds - make transparent
-              resultData.data[resultIndex] = 0;
-              resultData.data[resultIndex + 1] = 0;
-              resultData.data[resultIndex + 2] = 0;
-              resultData.data[resultIndex + 3] = 0;
-            }
-          } else {
-            // Outside circle - make transparent
-            resultData.data[resultIndex] = 0;
-            resultData.data[resultIndex + 1] = 0;
-            resultData.data[resultIndex + 2] = 0;
-            resultData.data[resultIndex + 3] = 0;
-          }
-        }
-      }
-
-      circularCtx.putImageData(resultData, 0, 0);
-
-      console.log('Circular crop details:', {
-        originalSize: `${originalCanvas.width}x${originalCanvas.height}`,
-        circleCenter: `(${Math.round(centerX)}, ${Math.round(centerY)})`,
-        radius: Math.round(radius),
-        outputSize: `${cropSize}x${cropSize}`,
-        cropPosition: `(${cropX}, ${cropY})`
-      });
-
-      circularCanvas.toBlob((blob) => {
-        if (!blob) return;
-        
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `color-selection-circle-${cropSize}x${cropSize}.png`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        
-        console.log('Downloaded circular crop PNG:', {
-          resolution: `${cropSize}x${cropSize}`,
-          fileSize: `${(blob.size / 1024 / 1024).toFixed(2)} MB`
-        });
-      }, 'image/png');
-      
-      return;
-    }
-
-    // Fallback to regular auto-crop for non-circular selections
-    const tempCanvas = document.createElement('canvas');
-    const tempCtx = tempCanvas.getContext('2d');
-    if (!tempCtx) return;
-
-    tempCanvas.width = canvas.width;
-    tempCanvas.height = canvas.height;
-
-    const imageData = originalCtx.getImageData(0, 0, originalCanvas.width, originalCanvas.height);
-    const resultData = tempCtx.createImageData(imageData.width, imageData.height);
-
-    const selectedColorObjects = Array.from(selectedColors).map(colorStr => {
-      const [r, g, b] = colorStr.split(',').map(Number);
-      return { r, g, b, a: 255 };
-    });
-
-    for (let y = 0; y < imageData.height; y++) {
-      for (let x = 0; x < imageData.width; x++) {
-        const i = (y * imageData.width + x) * 4;
-        
-        const pixelColor = {
-          r: imageData.data[i],
-          g: imageData.data[i + 1],
-          b: imageData.data[i + 2],
-          a: imageData.data[i + 3]
-        };
-
-        let isSelected = false;
-        for (const selectedColor of selectedColorObjects) {
-          if (colorDistance(pixelColor, selectedColor) <= tolerance) {
-            isSelected = true;
-            break;
-          }
-        }
-
-        if (isSelected) {
-          if (desaturateResult) {
-            const desaturated = desaturateColor(imageData.data[i], imageData.data[i + 1], imageData.data[i + 2]);
-            resultData.data[i] = desaturated.r;
-            resultData.data[i + 1] = desaturated.g;
-            resultData.data[i + 2] = desaturated.b;
-            resultData.data[i + 3] = imageData.data[i + 3];
-          } else {
-            resultData.data[i] = imageData.data[i];
-            resultData.data[i + 1] = imageData.data[i + 1];
-            resultData.data[i + 2] = imageData.data[i + 2];
-            resultData.data[i + 3] = imageData.data[i + 3];
-          }
-        } else {
-          resultData.data[i] = 0;
-          resultData.data[i + 1] = 0;
-          resultData.data[i + 2] = 0;
-          resultData.data[i + 3] = 0;
-        }
-      }
-    }
-
-    tempCtx.putImageData(resultData, 0, 0);
-
-    // Auto-crop to content bounds
-    let minX = tempCanvas.width, minY = tempCanvas.height, maxX = 0, maxY = 0, hasContent = false;
-
-    for (let y = 0; y < tempCanvas.height; y++) {
-      for (let x = 0; x < tempCanvas.width; x++) {
-        const index = (y * tempCanvas.width + x) * 4;
-        if (resultData.data[index + 3] > 0) {
-          hasContent = true;
-          minX = Math.min(minX, x); minY = Math.min(minY, y);
-          maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-        }
-      }
-    }
-
-    if (!hasContent) return;
-
-    const padding = 2;
-    const cropX = Math.max(0, minX - padding);
-    const cropY = Math.max(0, minY - padding);
-    const cropWidth = Math.min(tempCanvas.width - cropX, maxX - minX + 1 + padding * 2);
-    const cropHeight = Math.min(tempCanvas.height - cropY, maxY - minY + 1 + padding * 2);
-
-    const croppedCanvas = document.createElement('canvas');
-    const croppedCtx = croppedCanvas.getContext('2d');
-    if (!croppedCtx) return;
-
-    croppedCanvas.width = cropWidth;
-    croppedCanvas.height = cropHeight;
-    croppedCtx.putImageData(tempCtx.getImageData(cropX, cropY, cropWidth, cropHeight), 0, 0);
-
-    croppedCanvas.toBlob((blob) => {
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `color-selection-cropped-${cropWidth}x${cropHeight}.png`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 'image/png');
-  };
 
   const resetSelection = () => {
     setSelectedColors(new Set());
@@ -1912,10 +1727,11 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
 
   // Auto-process when selection or tolerance changes
   useEffect(() => {
-    if (selectedColors.size > 0 && !backgroundRemoved) {
+    // Don't auto-process when we're showing a preview from interactive detection
+    if (selectedColors.size > 0 && !backgroundRemoved && !previewElement) {
       processImage(activeCircularMask || undefined);
     }
-  }, [selectedColors, tolerance, processImage, activeCircularMask, backgroundRemoved]);
+  }, [selectedColors, tolerance, processImage, activeCircularMask, backgroundRemoved, previewElement]);
 
   // Debounced effect for circular mask analysis
   useEffect(() => {
@@ -1924,15 +1740,15 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
         const imageToUse = croppedImage || originalImage;
         analyzeImageColors(imageToUse, activeCircularMask);
         
-        // Also trigger processing if colors are already selected
-        if (selectedColors.size > 0) {
+        // Also trigger processing if colors are already selected (but not during preview)
+        if (selectedColors.size > 0 && !previewElement) {
           processImage(activeCircularMask);
         }
       }, 300); // 300ms delay to prevent too frequent analysis
       
       return () => clearTimeout(timeoutId);
     }
-  }, [activeCircularMask, originalImage, croppedImage, selectedColors.size, processImage]);
+  }, [activeCircularMask, originalImage, croppedImage, selectedColors.size, processImage, previewElement]);
 
   // Redraw image when canvas ref becomes available
   useEffect(() => {
@@ -2662,13 +2478,13 @@ export const ColorRangeSelector = forwardRef<ColorRangeSelectorRef, ColorRangeSe
                 </div>
                 
                 <Button
-                  onClick={saveAsset}
+                  onClick={saveAssetWithOptions}
                   disabled={isProcessing}
                   className="w-full text-xs flex items-center gap-1"
                   size="sm"
                 >
                   <Download className="w-3 h-3" />
-                  Save Asset
+                  Save Asset (Full + Cropped)
                 </Button>
                 
                 <Button

@@ -56,7 +56,7 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [imageData, setImageData] = useState<ImageData | null>(null);
   const [sensitivity, setSensitivity] = useState(50); // 0-100 scale
-  const [paddingFactor, setPaddingFactor] = useState(15); // 0-50% padding
+  const [paddingFactor, setPaddingFactor] = useState(15); // 0-200% padding for much larger rectangles
 
   // Load and draw image
   const loadImage = async () => {
@@ -75,25 +75,40 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
       img.src = imageSrc;
     });
 
-    // Set canvas size to match image
-    const maxWidth = 800;
-    const maxHeight = 600;
-    let { width, height } = img;
+    // Keep canvas at FULL resolution but scale display size
+    const maxDisplayWidth = 800;
+    const maxDisplayHeight = 600;
+    let displayWidth = img.width;
+    let displayHeight = img.height;
     
-    if (width > maxWidth || height > maxHeight) {
-      const scale = Math.min(maxWidth / width, maxHeight / height);
-      width *= scale;
-      height *= scale;
+    // Calculate display scaling while keeping canvas at original resolution
+    if (img.width > maxDisplayWidth || img.height > maxDisplayHeight) {
+      const displayScale = Math.min(maxDisplayWidth / img.width, maxDisplayHeight / img.height);
+      displayWidth = Math.round(img.width * displayScale);
+      displayHeight = Math.round(img.height * displayScale);
     }
     
-    canvas.width = width;
-    canvas.height = height;
-    setCanvasSize({ width, height });
+    // Set canvas to FULL original image resolution
+    canvas.width = img.width;
+    canvas.height = img.height;
+    setCanvasSize({ width: img.width, height: img.height });
     
-    ctx.drawImage(img, 0, 0, width, height);
+    // Set CSS display size for reasonable viewing
+    canvas.style.width = `${displayWidth}px`;
+    canvas.style.height = `${displayHeight}px`;
     
-    // Store image data for analysis
-    const imgData = ctx.getImageData(0, 0, width, height);
+    // Draw image at full resolution
+    ctx.drawImage(img, 0, 0, img.width, img.height);
+    
+    console.log('InteractiveElementDetector canvas setup:', {
+      originalImageSize: `${img.width}x${img.height}`,
+      canvasSize: `${canvas.width}x${canvas.height}`,
+      displaySize: `${displayWidth}x${displayHeight}`,
+      qualityRatio: `${(canvas.width / displayWidth).toFixed(2)}x`
+    });
+    
+    // Store image data for analysis (use full canvas dimensions)
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     setImageData(imgData);
   };
 
@@ -289,10 +304,19 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
     if (!canvas) return;
     
     const rect = canvas.getBoundingClientRect();
+    // Scale from display coordinates to full canvas coordinates
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     const x = (e.clientX - rect.left) * scaleX;
     const y = (e.clientY - rect.top) * scaleY;
+    
+    console.log('Mouse coordinates:', {
+      display: `${e.clientX - rect.left}, ${e.clientY - rect.top}`,
+      canvas: `${x.toFixed(1)}, ${y.toFixed(1)}`,
+      scale: `${scaleX.toFixed(2)}, ${scaleY.toFixed(2)}`,
+      canvasSize: `${canvas.width}x${canvas.height}`,
+      displaySize: `${rect.width}x${rect.height}`
+    });
     
     const element = analyzeAreaAroundPoint(x, y);
     setHoveredElement(element);
@@ -335,7 +359,17 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
     cropCanvas.width = width;
     cropCanvas.height = height;
 
-    // Draw the cropped region
+    console.log('Creating cropped result:', {
+      sourceCanvasSize: `${canvas.width}x${canvas.height}`,
+      cropRegion: `${x}, ${y}, ${width}x${height}`,
+      cropCanvasSize: `${cropCanvas.width}x${cropCanvas.height}`,
+      elementType: element.elementType
+    });
+
+    // Clear the crop canvas first
+    cropCtx.clearRect(0, 0, width, height);
+    
+    // Draw the cropped region from the full resolution source canvas
     cropCtx.drawImage(canvas, x, y, width, height, 0, 0, width, height);
 
     // Convert to data URL
@@ -404,12 +438,12 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
             <input
               type="range"
               min="0"
-              max="50"
+              max="200"
               value={paddingFactor}
               onChange={(e) => setPaddingFactor(Number(e.target.value))}
               className="flex-1"
             />
-            <span className="text-sm w-8">+{paddingFactor}%</span>
+            <span className="text-sm w-12">+{paddingFactor}%</span>
           </div>
         </div>
       )}
@@ -435,14 +469,14 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
         />
         
         {/* Hover overlay */}
-        {isAnalysisMode && hoveredElement && (
+        {isAnalysisMode && hoveredElement && canvasRef.current && (
           <div
             className="absolute border-2 border-yellow-400 bg-yellow-400/20 pointer-events-none transition-all duration-100"
             style={{
-              left: `${hoveredElement.boundingBox.x}px`,
-              top: `${hoveredElement.boundingBox.y}px`,
-              width: `${hoveredElement.boundingBox.width}px`,
-              height: `${hoveredElement.boundingBox.height}px`,
+              left: `${hoveredElement.boundingBox.x * (canvasRef.current.getBoundingClientRect().width / canvasRef.current.width)}px`,
+              top: `${hoveredElement.boundingBox.y * (canvasRef.current.getBoundingClientRect().height / canvasRef.current.height)}px`,
+              width: `${hoveredElement.boundingBox.width * (canvasRef.current.getBoundingClientRect().width / canvasRef.current.width)}px`,
+              height: `${hoveredElement.boundingBox.height * (canvasRef.current.getBoundingClientRect().height / canvasRef.current.height)}px`,
             }}
           >
             {/* Element info */}
@@ -455,14 +489,14 @@ const InteractiveElementDetector: React.FC<InteractiveElementDetectorProps> = ({
         )}
 
         {/* Selected element overlay */}
-        {selectedElement && (
+        {selectedElement && canvasRef.current && (
           <div
             className="absolute border-2 border-blue-500 bg-blue-500/20 pointer-events-none"
             style={{
-              left: `${selectedElement.boundingBox.x}px`,
-              top: `${selectedElement.boundingBox.y}px`,
-              width: `${selectedElement.boundingBox.width}px`,
-              height: `${selectedElement.boundingBox.height}px`,
+              left: `${selectedElement.boundingBox.x * (canvasRef.current.getBoundingClientRect().width / canvasRef.current.width)}px`,
+              top: `${selectedElement.boundingBox.y * (canvasRef.current.getBoundingClientRect().height / canvasRef.current.height)}px`,
+              width: `${selectedElement.boundingBox.width * (canvasRef.current.getBoundingClientRect().width / canvasRef.current.width)}px`,
+              height: `${selectedElement.boundingBox.height * (canvasRef.current.getBoundingClientRect().height / canvasRef.current.height)}px`,
             }}
           >
             {/* Selected element info */}
